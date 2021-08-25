@@ -35,8 +35,7 @@ def my_ceil(a, precision=0):
 
 
 def getbeam(datadict, new_beam, cutoff=None):
-    """Get beam info
-    """
+    """Get beam info"""
     log.info(f"Current beam is {datadict['oldbeam'].__repr__()}")
 
     if (
@@ -65,9 +64,8 @@ def getbeam(datadict, new_beam, cutoff=None):
         return conbm, fac
 
 
-def getimdata(cubenm):
-    """Get fits image data
-    """
+def getimdata(cubenm, remove_nans=False):
+    """Get fits image data"""
     log.info(f"Getting image data from {cubenm}")
     with fits.open(cubenm, memmap=True, mode="denywrite") as hdu:
 
@@ -97,12 +95,15 @@ def getimdata(cubenm):
             "dx": dxas,
             "dy": dyas,
         }
+        # save nan mask and replace nan with 0 for convolution
+        if remove_nans:
+            datadict["nan_mask"] = np.isnan(data)
+            datadict["image"] = np.nan_to_num(data)
     return datadict
 
 
 def smooth(datadict, conv_mode="robust"):
-    """Do the smoothing
-    """
+    """Do the smoothing"""
     if np.isnan(datadict["sfactor"]):
         log.warning("Beam larger than cutoff -- blanking")
 
@@ -133,7 +134,9 @@ def smooth(datadict, conv_mode="robust"):
             )
         elif conv_mode == "astropy":
             newim = convolve(
-                datadict["image"].astype("f8"), conbm1, normalize_kernel=False,
+                datadict["image"].astype("f8"),
+                conbm1,
+                normalize_kernel=False,
             )
         elif conv_mode == "astropy_fft":
             newim = convolve_fft(
@@ -151,8 +154,7 @@ def smooth(datadict, conv_mode="robust"):
 
 
 def savefile(datadict, filename, outdir="."):
-    """Save file to disk
-    """
+    """Save file to disk"""
     outfile = f"{outdir}/{filename}"
     log.info(f"Saving to {outfile}")
     header = datadict["header"]
@@ -177,17 +179,26 @@ def worker(args):
     outfile = outfile.replace(".fits", f".{clargs.suffix}.fits")
     if clargs.prefix is not None:
         outfile = clargs.prefix + outfile
-    datadict = getimdata(file)
+    datadict = getimdata(file, remove_nans=clargs.remove_nans)
 
-    conbeam, sfactor = getbeam(datadict, new_beam, cutoff=clargs.cutoff,)
+    conbeam, sfactor = getbeam(
+        datadict,
+        new_beam,
+        cutoff=clargs.cutoff,
+    )
 
     datadict.update({"conbeam": conbeam, "final_beam": new_beam, "sfactor": sfactor})
     newim = smooth(datadict, conv_mode=conv_mode)
+    if "nan_mask" in datadict:
+        log.info("Restoring original NaN mask")
+        newim[datadict["nan_mask"]] = np.nan
     if datadict["4d"]:
         # make it back into a 4D image
         newim = np.expand_dims(np.expand_dims(newim, axis=0), axis=0)
     datadict.update(
-        {"newimage": newim,}
+        {
+            "newimage": newim,
+        }
     )
 
     savefile(datadict, outfile, outdir)
@@ -204,8 +215,7 @@ def getmaxbeam(
     nsamps=200,
     epsilon=0.0005,
 ):
-    """Get smallest common beam
-    """
+    """Get smallest common beam"""
     beams = []
     for file in files:
         header = fits.getheader(file, memmap=True)
@@ -227,7 +237,8 @@ def getmaxbeam(
         )
     except BeamError:
         log.warning(
-            "Couldn't find common beam with defaults\nTrying again with smaller tolerance"
+            "Couldn't find common beam with defaults\nTrying again with smaller"
+            " tolerance"
         )
         cmn_beam = beams[~flags].common_beam(
             tolerance=tolerance * 0.1, epsilon=epsilon, nsamps=nsamps
@@ -345,8 +356,7 @@ def writelog(output, commonbeam_log):
 
 
 def main(pool, args):
-    """Main script
-    """
+    """Main script"""
     if args.dryrun:
         log.info("Doing a dry run -- no files will be saved")
     # Fix up outdir
@@ -447,8 +457,7 @@ def main(pool, args):
 
 
 def cli():
-    """Command-line interface
-    """
+    """Command-line interface"""
     import argparse
 
     # Help string to be shown using the -h option
@@ -468,7 +477,10 @@ def cli():
         "infile",
         metavar="infile",
         type=str,
-        help="Input FITS image(s) to smooth (can be a wildcard) - beam info must be in header.",
+        help=(
+            "Input FITS image(s) to smooth (can be a wildcard) - beam info must be in"
+            " header."
+        ),
         nargs="+",
     )
 
@@ -551,11 +563,17 @@ def cli():
         dest="log",
         type=str,
         default=None,
-        help="Name of beamlog file. If provided, save beamlog data to a file [None - not saved].",
+        help=(
+            "Name of beamlog file. If provided, save beamlog data to a file [None - not"
+            " saved]."
+        ),
     )
 
     parser.add_argument(
-        "--logfile", default=None, type=str, help="Save logging output to file",
+        "--logfile",
+        default=None,
+        type=str,
+        help="Save logging output to file",
     )
 
     parser.add_argument(
@@ -564,7 +582,10 @@ def cli():
         dest="cutoff",
         type=float,
         default=None,
-        help="Cutoff BMAJ value (arcsec) -- Blank channels with BMAJ larger than this [None -- no limit]",
+        help=(
+            "Cutoff BMAJ value (arcsec) -- Blank channels with BMAJ larger than this"
+            " [None -- no limit]"
+        ),
     )
 
     parser.add_argument(
@@ -592,6 +613,15 @@ def cli():
         type=int,
         default=200,
         help="nsamps for radio_beam.commonbeam.",
+    )
+
+    parser.add_argument(
+        "--remove-nans",
+        action="store_true",
+        help=(
+            "Replace NaNs in the input images with 0 before convolving, then restore"
+            " the original NaN pixel mask to the output."
+        ),
     )
 
     group = parser.add_mutually_exclusive_group()
@@ -622,14 +652,20 @@ def cli():
         log.basicConfig(
             filename=args.logfile,
             level=log.INFO,
-            format=f"[{myPE}] %(asctime)s.%(msecs)03d %(levelname)s %(module)s - %(funcName)s: %(message)s",
+            format=(
+                f"[{myPE}] %(asctime)s.%(msecs)03d %(levelname)s %(module)s -"
+                " %(funcName)s: %(message)s"
+            ),
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     elif args.verbosity >= 2:
         log.basicConfig(
             filename=args.logfile,
             level=log.DEBUG,
-            format=f"[{myPE}] %(asctime)s.%(msecs)03d %(levelname)s %(module)s - %(funcName)s: %(message)s",
+            format=(
+                f"[{myPE}] %(asctime)s.%(msecs)03d %(levelname)s %(module)s -"
+                " %(funcName)s: %(message)s"
+            ),
             datefmt="%Y-%m-%d %H:%M:%S",
         )
     pool = schwimmbad.choose_pool(mpi=args.mpi, processes=args.n_cores)
