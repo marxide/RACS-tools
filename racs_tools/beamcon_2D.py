@@ -222,6 +222,12 @@ def worker(args):
 
         savefile(datadict, outfile, outdir)
 
+    # Remove image data from datadict. It's not used beyond this point and can cause
+    # overflow errors when using MPI as it tries to send the image data back to the main
+    # process.
+    del datadict["image"]
+    del datadict["newimage"]
+
     return datadict
 
 
